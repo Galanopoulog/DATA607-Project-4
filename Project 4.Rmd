@@ -1,0 +1,296 @@
+---
+title: "Project 4 - Document Classification"
+author: "Georgia Galanopoulos"
+date: "April 16, 2017"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(tidytext)
+library(ggplot2)
+library(knitr)
+```
+**Task:** Analyze documents or scraped web pages to predict how new documents that have already been classified (movie reviews as positive/negative, email inbox as spam/ham, etc.) should be categorized.
+
+Using the dataset from a CrowdFlower sentiment analysis called "Emotion in Text" which contains labels for the emotional content (such as happiness, sadness, and anger) of tweets, the content of the tweets were compared against two *tidytext* sentiment lexicons ("affin" and "bing"), each of which scored certain words as having positive or negative associations both numerically (-5 to 5) and categorically (positive or negative).
+```{r}
+# Tidytext sentiments lexicons
+get_sentiments("afinn") # -5 to 5
+get_sentiments("bing") # negative or positive
+```
+
+After importing the data, the already classified sentiments (13 in total) were changed into positive, negative or neutral, in order to make the predictions broader and therefore more manageable. Six sentiments were changed to negative, five to positive and two to neutral.
+
+```{r}
+# Import data from GitHub
+TextEm = read.csv("https://raw.githubusercontent.com/Galanopoulog/DATA607-Project-4/master/TextEmotion.csv",
+           header = T,
+           sep = ",",
+           stringsAsFactors = F)
+kable(head(TextEm))
+
+# Changing sentiments into positive/negative/neutral
+TextEm$sentiment[TextEm$sentiment == "anger"] = "negative"
+TextEm$sentiment[TextEm$sentiment == "boredom"] = "negative"
+TextEm$sentiment[TextEm$sentiment == "empty"] = "negative"
+TextEm$sentiment[TextEm$sentiment == "enthusiasm"] = "positive"
+TextEm$sentiment[TextEm$sentiment == "fun"] = "positive"
+TextEm$sentiment[TextEm$sentiment == "happiness"] = "positive"
+TextEm$sentiment[TextEm$sentiment == "hate"] = "negative"
+TextEm$sentiment[TextEm$sentiment == "love"] = "positive"
+TextEm$sentiment[TextEm$sentiment == "neutral"] = "neutral"
+TextEm$sentiment[TextEm$sentiment == "relief"] = "positive"
+TextEm$sentiment[TextEm$sentiment == "sadness"] = "negative"
+TextEm$sentiment[TextEm$sentiment == "surprise"] = "neutral"
+TextEm$sentiment[TextEm$sentiment == "worry"] = "negative"
+```
+
+The data that was labled "neutral" was ommitted due to the difficulty of defining it and, therefore, classifying. For example, the sentiment of "surprise" can be both positive and negative, unlike "relief" which is a feeling of reassurance after experiencing anxiety or worry and therefore, overall, a positive sentiment. From there, the data was split into thirds, two-thirds to use for analysis and one-third to conduct the predictions.
+```{r}
+TextEm = filter(TextEm, sentiment != "neutral")
+dim(TextEm)
+
+testText = TextEm[1:19450,]       # two-thirds
+predText = TextEm[19451:29175,]   # one-third
+```
+
+The first step in the sentiment analysis was to clean the tweets and organize them in such a way that each word can be compared against both lexicons.
+
+```{r}
+all.content = as.list(testText$content)
+
+collection = tibble()
+
+for(i in 1:nrow(testText)) {
+  
+  clean = tibble(stuff = all.content[[i]]) %>%
+    unnest_tokens(word, stuff) %>%
+    mutate(user = testText$author[i]) %>%
+    select(user, everything())
+  
+  collection = rbind(collection, clean)
+}
+
+kable(head(collection))
+```
+
+Once the data is arranged, we compare each word against the "affin" lexicon. After the words are scored, we find the mean score of the significant words for each user.
+```{r}
+# Using "afinn" to find scores of words
+af.sent = data.frame(get_sentiments("afinn"))
+
+af.sen = data.frame(merge(collection, af.sent, by.x="word", by.y="word") %>% # scoring the words
+  group_by(user) %>%      # group by user
+  mutate(mean.af.sent = mean(score)) %>%  # find the mean score per user
+  slice(which.max(mean.af.sent))  # retain only one output per user
+)
+
+kable(head(af.sen))
+```
+
+Repeat the method used for "affin" lexicon with the "bing" lexicon. However, since "bing" classifies words by positive/negative, in order to find the mean, we convert the negative values to -1 and the positive ones to 1 before performing calculations.
+```{r}
+# Using bing to find pos/neg of words
+bing.sent = data.frame(get_sentiments("bing"))
+
+# To find if the overall message was pos/neg, turn values into 1 or -1, find mean
+bi.sen = data.frame(merge(collection, bing.sent, by.x="word", by.y="word"))
+bi.sen$sentiment[bi.sen$sentiment == "negative"] = -1
+bi.sen$sentiment[bi.sen$sentiment == "positive"] = 1
+
+bi.sen = bi.sen %>%
+  group_by(user) %>% 
+  mutate(posneg = mean(as.numeric(sentiment)))%>% 
+  group_by(user) %>%
+  slice(which.max(posneg))
+
+kable(head(bi.sen))
+```
+
+
+Since the two lexicons may not place the tweets under the same category, the solutions from afinn and bing were merged by user and compared. A new column was created called "match" which determined whether the "bing" and "afinn" values matched (yes) or not (no) and, if "yes", a verdict was made on whether the tweet was overall a positive or negative one.
+```{r}
+# Combining by user
+all.sen = data.frame(merge(bi.sen, af.sen, by.x="user", by.y="user"))
+
+all.sen2 = all.sen[,c(1,4,7)] %>% 
+  group_by(user) %>%
+  mutate(match = ifelse(posneg < 0 & mean.af.sent < 0, "yes", ifelse(posneg > 0 & mean.af.sent > 0, "yes", "no")))%>%
+  mutate(verdict = ifelse(match == "yes" & posneg < 0, "negative", ifelse(match == "yes" & posneg > 0, "positive", "other")))
+
+kable(head(all.sen))
+```
+
+Once a match had been concluded, the verdict was compared against the original categorization (sentiment) of the tweet.
+```{r}
+final = merge(testText, all.sen2, by.x="author", by.y="user")[, c(1,3,7,8,5,6)] %>% 
+  group_by(author) %>%
+  slice(which.max(mean.af.sent))
+
+kable(head(final))
+```
+
+
+In order to assess if the predicted conclusion matched the original classification, only the conclusions that were definitively determined as positive or negative through the agreement of both lexicons were used. From there, a confusion matrix was created to calculate whether the predicted values matched the actual values in addition to the accuracy of this approach. 
+```{r}
+final.yes = filter(final, match == "yes")
+
+pos.pos = filter(final.yes, sentiment == "positive" & verdict == "positive")
+pos.neg = filter(final.yes, sentiment == "positive" & verdict == "negative")
+neg.pos = filter(final.yes, sentiment == "negative" & verdict == "positive")
+neg.neg = filter(final.yes, sentiment == "negative" & verdict == "negative")
+
+conf.matrix = matrix(c(nrow(pos.pos), 
+                       nrow(pos.neg), 
+                       nrow(neg.pos), 
+                       nrow(neg.neg)),ncol=2)
+colnames(conf.matrix) = c("pred_pos", "pred_neg")
+rownames(conf.matrix) = c("actual_pos", "actual_neg")
+
+conf.matrix
+
+
+# Number of values that match the original sentiment
+table(final.yes[,2] == final.yes[,4])
+# Proportion of values that match the original sentiment (accuracy)
+prop.table(table(final.yes[,2] == final.yes[,4]))
+```
+
+
+Before proceeding with running the prediction dataset through a sentiment analysis function that uses this approach, I got curious as to what values were ommitted from the final analysis, especially when seeing that one-fourth of final dataset was discarded due to the lexicons not agreeing. 
+```{r}
+# proportion of values ommitted
+1-nrow(final.yes)/nrow(final)
+
+# ommitted data
+final.no = filter(final, match == "no")
+kable(head(final.no))
+```
+
+Upon viewing the dataset where the lexicons didn't match, it became evident that a major disagreement (approximately 72% of the ommitted data) was due to one lexicon having a neutral value of 0 for a user while the other was positive or negative. To combat this, the mean of the two lexicons was taken and its value (positive or negative) was compared against the original classification. Then, the proportion where the mean of the lexicons matched the original dataset was derived. Approximately 60% of verdicts were correct.
+
+```{r}
+# proportion of ommitted data that had at least one zero
+nrow(filter(final.no, posneg == 0 | mean.af.sent == 0))/nrow(final.no)
+
+# Average the means of the data and see if they are more positive or negative
+final.no2 = final.no %>%
+       filter(posneg == 0 | mean.af.sent == 0) %>% 
+       filter(posneg != mean.af.sent) %>%   # Remove where both values are zero, because the mean will be undefined
+       mutate(both.mean = (posneg+mean.af.sent)/2) %>% 
+       mutate(verdict = ifelse(both.mean  < 0, "negative", "positive"))
+
+prop.table(table(final.no2[,2] == final.no2[,4]))
+```
+
+A 60% correct prediction is not preferable, especially when considering that the data that wasn't ommitted scored approximately 16% higher, however, the higher accuracy can be contributed to the whittling down of data. Adding variability to the model makes it more inclusive to a wider range of tweets. As such, the ommitted, re-evaluated data was added to the previous conclusions.
+```{r}
+all.final = bind_rows(final.yes, final.no2)
+
+# accuracy of combined table
+prop.table(table(all.final[,2] == all.final[,4]))
+```
+
+
+Finally, a function was created where tweets from the prediction set (one-third of the original data) and the results of the confusion matrix were returned, in addition to the percent of the model's accuracy and inaccuracy.
+
+```{r}
+sent.analysis = function(x){
+  all.content = as.list(x$content)
+  
+  collection = tibble()
+  
+  for(i in 1:nrow(x)) {
+    
+    clean = tibble(stuff = all.content[[i]]) %>%
+      unnest_tokens(word, stuff) %>%
+      mutate(user = x$author[i]) %>%
+      select(user, everything())
+    
+    collection = rbind(collection, clean)
+  }
+ 
+    af.sent = data.frame(get_sentiments("afinn"))
+    af.sen = data.frame(merge(collection, af.sent, by.x="word", by.y="word") %>% 
+                          group_by(user) %>% 
+                          mutate(mean.af.sent = mean(score)) %>%
+                          slice(which.max(mean.af.sent))
+    )
+    
+    bing.sent = data.frame(get_sentiments("bing"))
+    bi.sen = data.frame(merge(collection, bing.sent, by.x="word", by.y="word"))
+    bi.sen$sentiment[bi.sen$sentiment == "negative"] = -1
+    bi.sen$sentiment[bi.sen$sentiment == "positive"] = 1
+    
+    
+    bi.sen = bi.sen %>%
+      group_by(user) %>% 
+      mutate(posneg = mean(as.numeric(sentiment)))%>% 
+      group_by(user) %>%
+      slice(which.max(posneg))
+    
+    all.sen = data.frame(merge(bi.sen, af.sen, by.x="user", by.y="user")[,c(1,4,7)]) %>% 
+      group_by(user) %>%
+      mutate(match = ifelse(posneg < 0 & mean.af.sent < 0, "yes", ifelse(posneg > 0 & mean.af.sent > 0, "yes", "no")))%>%
+      mutate(verdict = ifelse(match == "yes" & posneg < 0, "negative", ifelse(match == "yes" & posneg > 0, "positive", "other")))
+
+
+    final = merge(x, all.sen, by.x="author", by.y="user")[, c(1,3,7,8,5,6)] %>% 
+      group_by(author) %>%
+      slice(which.max(mean.af.sent))
+    
+    final.yes = filter(final, match == "yes")
+    final.no = filter(final, match == "no")%>%
+      filter(posneg == 0 | mean.af.sent == 0) %>% 
+      filter(posneg != mean.af.sent) %>% 
+      mutate(both.mean = (posneg+mean.af.sent)/2) %>% 
+      mutate(verdict = ifelse(both.mean  < 0, "negative", "positive"))
+    all.final = bind_rows(final.yes, final.no2)
+    
+    pos.pos = filter(all.final, sentiment == "positive" & verdict == "positive")
+    pos.neg = filter(all.final, sentiment == "positive" & verdict == "negative")
+    neg.pos = filter(all.final, sentiment == "negative" & verdict == "positive")
+    neg.neg = filter(all.final, sentiment == "negative" & verdict == "negative")
+    
+    accuracy = (nrow(pos.pos)+nrow(neg.neg))/(nrow(pos.pos)+ nrow(pos.neg)+ nrow(neg.pos)+ nrow(neg.neg))*100
+    
+    conf.matrix = matrix(c(nrow(pos.pos), 
+                           nrow(pos.neg), 
+                           nrow(neg.pos), 
+                           nrow(neg.neg),
+                           accuracy,
+                           100-accuracy), ncol=6)
+    colnames(conf.matrix) = c("pred_pos", "pred_neg", "actual_pos", "actual_neg", "percent_accuracy", "percent_inaccuracy")
+
+    return(conf.matrix)
+}
+
+sent.analysis(predText)
+```
+
+
+Using the test dataset, since it had more values, we plotted what the confusion matrix proportions may look like. The plot showed that the model was better at correctly identifying negative tweets, whereas positive tweets had approximately a fifty percent chance of being categorized correctly.
+```{r}
+sen.verd = table(all.final$verdict, all.final$sentiment)
+mosaicplot(sen.verd, main = "Confusion Matrix Proportions ", xlab = "sentiment", ylab = "verdict", col = c(2,4))
+```
+
+
+** Conclusion **
+
+Using the "afinn" and "bing" lexicons to analyze tweets led to a model that predicted the category correctly (with enough ommissions) up to approximately 75% of the data. However, by the end of the analysis, it became clear that this approach was not optimal for various reasons, the main one *being* the ommissions. Ommissions fell mostly into three categories: Pre-evaluation, Lexicon and Disagreeable.
+
+
+In the Pre-evaluation page, tweets that were deemed "neutral" could not be randomly assigned into either the positive or negative category, simply because they did not fit in either for reasons explained at the beginning of the assignment. As such, they were removed. In order to counter that, what may take place in a future endeavor is perhaps creating a sentiment analysis that separates data into emotive (positive/negative) tweets and neutral ones.
+
+
+In the Lexicon stage, tweets that did not have words in either or one of the lexicons, were automatically dismissed from the data. The issue with this stems from the way tweets are written, in that the majority of the content includes colloquialisms and purposely/accidentally mispelled words. Few if any of these are found in the lexicons and, thus, a sizeable portion of the data was dropped. If, perhaps, a lexicon was created that included phrases often used in comment sections or a lexicon that identified words, regardless (for example) of whether they were purposely modified to elongate consonants or vowels, the approach used in this assignment would be more appropriate.
+
+
+Finally, in the Disagreeable stage, when the lexicons were at odds on whether a term was positive or negative, the data was removed due to the inability of determining which lexicon was more accurate. In certain occasions, each lexicon picked different words to compare, in which case the inability to compare the lexicons' stances was even more pronounced.
+
+Overall, considering the data that was selected and the lexicons used, this method performed admirably. Its main drawback is that it can only be used with data that is more formal and perhaps three lexicons (to break the tie in case two disagree).
+
+
+
